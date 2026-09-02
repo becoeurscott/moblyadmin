@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 const API_BASE =
   process.env.API_URL || "https://mobly-backend.onrender.com/api/v1";
 
-export async function handler(
+async function handler(
   req: NextRequest,
   { params }: { params: Promise<{ path: string[] }> },
 ) {
