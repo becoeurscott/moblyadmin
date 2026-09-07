@@ -15,6 +15,12 @@ interface User {
   fullName: string;
   email?: string;
   phone: string;
+  /**
+   * Tiered permission. Used only to hide controls the caller cannot use —
+   * the server checks every action independently, so a stale or spoofed value
+   * here reveals a button, never an ability.
+   */
+  adminRole?: "READ_ONLY" | "SUPPORT" | "MODERATOR" | "ADMIN" | "SUPER_ADMIN" | null;
   isAdmin: boolean;
   isOwner: boolean;
   avatarUrl?: string;

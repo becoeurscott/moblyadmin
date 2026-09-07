@@ -17,6 +17,15 @@ async function handler(
   };
   const auth = req.headers.get("Authorization");
   if (auth) headers["Authorization"] = auth;
+  // Confirmation phrase for irreversible actions. Dropping it here would make
+  // every guarded endpoint reject the request as unconfirmed.
+  const confirm = req.headers.get("x-confirm");
+  if (confirm) headers["x-confirm"] = confirm;
+  // The backend's IP allowlist and audit log record the *caller*, but this
+  // proxy is the caller as far as the backend can see. Forward the browser's
+  // address so both reflect the operator rather than the Next.js server.
+  const fwd = req.headers.get("x-forwarded-for");
+  if (fwd) headers["x-forwarded-for"] = fwd;
 
   const body =
     req.method !== "GET" && req.method !== "HEAD"
@@ -30,10 +39,15 @@ async function handler(
   });
 
   const data = await res.text();
-  return new NextResponse(data, {
-    status: res.status,
-    headers: { "Content-Type": res.headers.get("Content-Type") || "application/json" },
-  });
+  const out: Record<string, string> = {
+    "Content-Type": res.headers.get("Content-Type") || "application/json",
+  };
+  // CSV and JSON exports rely on this to download as a file rather than
+  // rendering as text in the browser.
+  const disposition = res.headers.get("Content-Disposition");
+  if (disposition) out["Content-Disposition"] = disposition;
+
+  return new NextResponse(data, { status: res.status, headers: out });
 }
 
 export const GET = handler;

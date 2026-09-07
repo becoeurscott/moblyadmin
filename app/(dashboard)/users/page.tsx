@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { useAuth } from "@/lib/auth";
 import { adminApi } from "@/lib/api";
 import { useEffect, useState, useCallback } from "react";
@@ -142,12 +144,12 @@ export default function UsersPage() {
                   {new Date(u.createdAt).toLocaleDateString("fr-FR")}
                 </td>
                 <td className="px-5 py-3">
-                  <button
-                    onClick={() => setSelected(u)}
+                  <Link
+                    href={`/users/${u.id}`}
                     className="text-primary hover:text-primary/70 text-sm font-medium cursor-pointer"
                   >
                     Gérer
-                  </button>
+                  </Link>
                 </td>
               </tr>
             ))}

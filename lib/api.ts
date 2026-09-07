@@ -5,6 +5,12 @@ interface RequestOptions {
   body?: unknown;
   token?: string;
   params?: Record<string, string | number | undefined>;
+  /**
+   * Typed confirmation phrase for an irreversible action, sent as `x-confirm`.
+   * The server compares it against the id of the thing being destroyed, so a
+   * mis-click on the wrong row cannot go through even if the UI picked wrong.
+   */
+  confirm?: string;
 }
 
 export class ApiError extends Error {
@@ -21,7 +27,7 @@ export async function api<T = unknown>(
   path: string,
   opts: RequestOptions = {},
 ): Promise<T> {
-  const { method = "GET", body, token, params } = opts;
+  const { method = "GET", body, token, params, confirm } = opts;
 
   let url = `${API_BASE}${path}`;
   if (params) {
@@ -37,6 +43,7 @@ export async function api<T = unknown>(
     "Content-Type": "application/json",
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  if (confirm) headers["x-confirm"] = confirm;
 
   const res = await fetch(url, {
     method,
