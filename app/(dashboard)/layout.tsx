@@ -19,7 +19,7 @@ export default function DashboardLayout({
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-surface">
+      <div className="min-h-screen flex items-center justify-center bg-bg">
         <div className="w-8 h-8 border-3 border-primary/30 border-t-primary rounded-full animate-spin" />
       </div>
     );
@@ -28,9 +28,11 @@ export default function DashboardLayout({
   if (!user) return null;
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-screen overflow-hidden bg-bg">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto p-8">{children}</main>
+      <main className="flex-1 overflow-y-auto px-6 py-6 lg:px-8 lg:py-7">
+        <div className="max-w-[1400px] mx-auto">{children}</div>
+      </main>
     </div>
   );
 }

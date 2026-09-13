@@ -1,20 +1,83 @@
 @import "tailwindcss";
 
+/*
+ * Colour tokens.
+ *
+ * Semantic names (bg / card / fg / muted / line) are what new code should use.
+ * The older names (dark / text / surface / border) are kept as aliases so the
+ * existing pages keep working — and because they are redefined under
+ * [data-theme="dark"] too, those pages get a correct dark mode for free.
+ */
 @theme {
-  --color-primary: #3A4FF0;
-  --color-primary-light: #EEF0FE;
-  --color-accent: #FF6B35;
-  --color-dark: #1A1A2E;
+  --color-primary: #3a4ff0;
+  --color-primary-light: #eef0fe;
+  /* Primary used as text/icon on a surface — swapped to a lighter blue in dark. */
+  --color-primary-text: #3a4ff0;
+  --color-accent: #ff6b35;
+  --color-success: #22c55e;
+  --color-danger: #e5484d;
+  --color-warning: #f5a623;
+  --color-violet: #a855f7;
+
+  --color-bg: #f4f5f9;
+  --color-card: #ffffff;
+  --color-fg: #1a1a2e;
+  --color-muted: #6b7280;
+  --color-line: #e6e8ef;
+
+  /* legacy aliases */
+  --color-dark: #1a1a2e;
   --color-text: #666666;
-  --color-surface: #F8F9FB;
-  --color-border: #E5E7EB;
-  --color-success: #34C759;
-  --color-danger: #E5484D;
-  --color-warning: #F5A623;
+  --color-surface: #f4f5f9;
+  --color-border: #e6e8ef;
+
+  --shadow-card: 0 1px 2px rgba(20, 21, 42, 0.04), 0 8px 24px -12px rgba(20, 21, 42, 0.12);
+}
+
+html[data-theme="dark"] {
+  --color-primary-light: #232744;
+  --color-primary-text: #8b96ff;
+
+  --color-bg: #15161d;
+  --color-card: #1e1f2b;
+  --color-fg: #f3f4f8;
+  --color-muted: #9aa0b4;
+  --color-line: #2b2d3b;
+
+  --color-dark: #f3f4f8;
+  --color-text: #9aa0b4;
+  --color-surface: #15161d;
+  --color-border: #2b2d3b;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+}
+
+/* Pages that still hardcode white cards get the dark card surface instead;
+   `text-white` is untouched. */
+html[data-theme="dark"] .bg-white {
+  background-color: var(--color-card);
+}
+
+html {
+  color-scheme: light;
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 body {
-  font-family: "Inter", system-ui, -apple-system, sans-serif;
-  color: var(--color-dark);
-  background: var(--color-surface);
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--color-fg);
+  background: var(--color-bg);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-primary) 25%, transparent);
+}
+
+/* Subtle scrollbars that follow the theme. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
 }
