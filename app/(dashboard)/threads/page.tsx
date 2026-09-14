@@ -1,10 +1,11 @@
 "use client";
 
 import { useAuth } from "@/lib/auth";
-import { adminApi } from "@/lib/api";
+import { adminApi, ApiError } from "@/lib/api";
 import { useEffect, useState, useCallback } from "react";
 import Pagination from "@/components/Pagination";
 import Topbar from "@/components/Topbar";
+import { Modal, Btn, Notice, Field, inputClass } from "@/components/ui";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -24,6 +25,8 @@ interface Thread {
   messageCount: number;
   lastMessage: { text: string; kind: string; createdAt: string } | null;
   updatedAt: string;
+  frozenAt: string | null;
+  frozenReason: string | null;
 }
 
 interface Paged<T> {
@@ -45,11 +48,23 @@ interface UserRow extends Participant {
 
 interface Message {
   id: string;
-  text: string;
-  kind: string;
+  text: string | null;
+  kind: "TEXT" | "IMAGE" | "VOICE" | (string & {});
+  mediaUrl: string | null;
   createdAt: string;
+  deletedAt: string | null;
+  deletedBy?: string | null;
+  deleteReason: string | null;
   sender: { id: string; fullName: string; avatarColor?: string | null };
 }
+
+interface NoticeState {
+  kind: "success" | "danger";
+  text: string;
+}
+
+const errMsg = (e: unknown, fallback: string) =>
+  e instanceof ApiError ? e.message || fallback : e instanceof Error ? e.message || fallback : fallback;
 
 type Mode = "byUser" | "all";
 
@@ -115,6 +130,22 @@ export default function ThreadsPage() {
   const [selectedThread, setSelectedThread] = useState<Thread | null>(null);
   const [messages, setMessages] = useState<Message[] | null>(null);
 
+  // moderation
+  const [notice, setNotice] = useState<NoticeState | null>(null);
+  const [freezeOpen, setFreezeOpen] = useState(false);
+  const [freezeReason, setFreezeReason] = useState("");
+  const [freezeBusy, setFreezeBusy] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Message | null>(null);
+  const [deleteReason, setDeleteReason] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
+  // Feedback fades on its own so a stale message doesn't linger over the list.
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
   /* ---- loaders ---------------------------------------------------- */
 
   const loadUsers = useCallback(() => {
@@ -161,6 +192,7 @@ export default function ThreadsPage() {
     setSelectedUser(null);
     setSelectedThread(null);
     setMessages(null);
+    setNotice(null);
     setUserPage(0);
     setThreadPage(0);
   }, [mode, query]);
@@ -169,8 +201,81 @@ export default function ThreadsPage() {
     if (!token) return;
     setSelectedThread(t);
     setMessages(null);
+    setNotice(null);
     const res = await adminApi<{ items: Message[] }>(`/threads/${t.id}/messages`, token);
     setMessages(res.items);
+  }
+
+  function closeThread() {
+    setSelectedThread(null);
+    setMessages(null);
+    setNotice(null);
+  }
+
+  /** Patch one thread both in the open pane and in the list, without a reload. */
+  function patchThread(id: string, patch: Partial<Thread>) {
+    setSelectedThread((prev) => (prev && prev.id === id ? { ...prev, ...patch } : prev));
+    setThreads((prev) =>
+      prev ? { ...prev, items: prev.items.map((t) => (t.id === id ? { ...t, ...patch } : t)) } : prev,
+    );
+  }
+
+  async function setFrozen(frozen: boolean, reason?: string) {
+    if (!token || !selectedThread) return;
+    const id = selectedThread.id;
+    setFreezeBusy(true);
+    try {
+      const res = await adminApi<Partial<Pick<Thread, "frozenAt" | "frozenReason">> | undefined>(
+        `/moderation/threads/${id}/freeze`,
+        token,
+        { method: "POST", body: frozen ? { frozen, reason: reason || undefined } : { frozen } },
+      );
+      patchThread(
+        id,
+        frozen
+          ? {
+              frozenAt: res?.frozenAt ?? new Date().toISOString(),
+              frozenReason: res?.frozenReason !== undefined ? res.frozenReason : reason || null,
+            }
+          : { frozenAt: null, frozenReason: null },
+      );
+      setNotice({
+        kind: "success",
+        text: frozen ? "Conversation gelée : plus aucun nouveau message ne sera accepté." : "Conversation dégelée.",
+      });
+      setFreezeOpen(false);
+      setFreezeReason("");
+    } catch (e) {
+      setFreezeOpen(false);
+      setNotice({ kind: "danger", text: errMsg(e, frozen ? "Impossible de geler la conversation." : "Impossible de dégeler la conversation.") });
+    } finally {
+      setFreezeBusy(false);
+    }
+  }
+
+  async function deleteMessage() {
+    if (!token || !deleteTarget) return;
+    const target = deleteTarget;
+    const reason = deleteReason.trim();
+    setDeleteBusy(true);
+    try {
+      await adminApi(`/moderation/messages/${target.id}`, token, {
+        method: "DELETE",
+        body: reason ? { reason } : {},
+      });
+      const now = new Date().toISOString();
+      setMessages((prev) =>
+        prev ? prev.map((m) => (m.id === target.id ? { ...m, deletedAt: now, deleteReason: reason || null } : m)) : prev,
+      );
+      setNotice({ kind: "success", text: "Message supprimé." });
+      setDeleteTarget(null);
+      setDeleteReason("");
+    } catch (e) {
+      setDeleteTarget(null);
+      setNotice({ kind: "danger", text: errMsg(e, "Impossible de supprimer le message.") });
+    } finally {
+      setDeleteBusy(false);
+    }
   }
 
   function pickUser(u: UserRow) {
@@ -311,6 +416,15 @@ export default function ThreadsPage() {
                             <p className={`text-[13px] font-semibold truncate ${active ? "text-primary-text" : "text-fg"}`}>
                               {peers.length ? peers.map((p) => p.fullName).join(", ") : t.participants.map((p) => p.fullName).join(", ")}
                             </p>
+                            {t.frozenAt && (
+                              <span
+                                title={t.frozenReason ? `Gelée : ${t.frozenReason}` : "Conversation gelée"}
+                                className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md shrink-0 self-center bg-warning/15 text-warning"
+                              >
+                                <LockIcon className="w-2.5 h-2.5" />
+                                Gelée
+                              </span>
+                            )}
                             <span className="ml-auto text-[11px] text-muted shrink-0">{timeAgo(t.updatedAt)}</span>
                           </div>
                           <p className="text-[11.5px] text-muted truncate">
@@ -347,37 +461,147 @@ export default function ThreadsPage() {
             title="Messages"
             meta={selectedThread.participants.map((p) => p.fullName).join(" ↔ ")}
             right={
-              <button onClick={() => { setSelectedThread(null); setMessages(null); }} className="text-[12px] text-muted hover:text-fg cursor-pointer">
-                Fermer
-              </button>
+              <span className="flex items-center gap-3">
+                {selectedThread.frozenAt ? (
+                  <button
+                    onClick={() => setFrozen(false)}
+                    disabled={freezeBusy}
+                    className="inline-flex items-center gap-1 text-[12px] font-semibold px-2 py-1 rounded-lg bg-success/12 text-success hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
+                  >
+                    {freezeBusy ? "…" : "Dégeler"}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => { setFreezeReason(""); setFreezeOpen(true); }}
+                    disabled={freezeBusy}
+                    className="inline-flex items-center gap-1 text-[12px] font-semibold px-2 py-1 rounded-lg bg-warning/15 text-warning hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
+                  >
+                    <LockIcon className="w-3 h-3" />
+                    Geler
+                  </button>
+                )}
+                <button onClick={closeThread} className="text-[12px] text-muted hover:text-fg cursor-pointer">
+                  Fermer
+                </button>
+              </span>
             }
             className="max-h-[calc(100vh-11rem)]"
           >
+            {notice && (
+              <div className="px-4 pt-3 shrink-0">
+                <Notice kind={notice.kind}>{notice.text}</Notice>
+              </div>
+            )}
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {selectedThread.frozenAt && (
+                <div className="flex items-start gap-2 rounded-xl px-3 py-2.5 bg-warning/15 text-warning">
+                  <LockIcon className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-[12px] font-semibold">Conversation gelée</p>
+                    <p className="text-[11.5px] opacity-90 break-words">
+                      {selectedThread.frozenReason || "Aucune raison indiquée."}
+                      <span className="opacity-75"> · depuis le {new Date(selectedThread.frozenAt).toLocaleString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+                    </p>
+                  </div>
+                </div>
+              )}
               {messages === null ? (
                 <Empty>Chargement…</Empty>
               ) : messages.length === 0 ? (
                 <Empty>Aucun message.</Empty>
               ) : (
-                messages.map((m) => (
-                  <div key={m.id}>
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <Avatar p={{ id: m.sender.id, fullName: m.sender.fullName, avatarColor: m.sender.avatarColor }} size={7} />
-                      <span className="text-[12px] font-semibold text-fg">{m.sender.fullName}</span>
-                      <span className="text-[10px] text-muted">
-                        {new Date(m.createdAt).toLocaleString("fr-FR", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" })}
-                      </span>
+                messages.map((m) => {
+                  const deleted = !!m.deletedAt;
+                  return (
+                    <div key={m.id} className="group relative">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <Avatar p={{ id: m.sender.id, fullName: m.sender.fullName, avatarColor: m.sender.avatarColor }} size={7} />
+                        <span className="text-[12px] font-semibold text-fg">{m.sender.fullName}</span>
+                        <span className="text-[10px] text-muted">
+                          {new Date(m.createdAt).toLocaleString("fr-FR", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" })}
+                        </span>
+                        {!deleted && (
+                          <button
+                            onClick={() => { setDeleteReason(""); setDeleteTarget(m); }}
+                            title="Supprimer ce message"
+                            aria-label="Supprimer ce message"
+                            className="ml-auto p-1 rounded-md text-muted hover:text-danger hover:bg-danger/12 opacity-0 group-hover:opacity-100 focus:opacity-100 transition cursor-pointer"
+                          >
+                            <TrashIcon className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      <div className={`ml-9 ${deleted ? "opacity-50 line-through" : ""}`}>
+                        <MessageBody m={m} />
+                      </div>
+                      {deleted && (
+                        <p className="ml-9 mt-0.5 text-[11px] text-danger">
+                          Supprimé par un modérateur{m.deleteReason ? ` — ${m.deleteReason}` : ""}
+                        </p>
+                      )}
                     </div>
-                    <p className="text-[13px] text-fg ml-9 whitespace-pre-wrap break-words">
-                      {m.text || <span className="italic text-muted">[{m.kind?.toLowerCase()}]</span>}
-                    </p>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </Column>
         )}
       </div>
+
+      {/* ---- freeze dialog -------------------------------------------- */}
+      <Modal open={freezeOpen} onClose={() => !freezeBusy && setFreezeOpen(false)} title="Geler la conversation">
+        <p className="text-[13px] text-muted mb-4">
+          Les participants ne pourront plus envoyer de nouveaux messages tant que la conversation reste gelée.
+        </p>
+        <Field label="Raison (facultatif)">
+          <textarea
+            value={freezeReason}
+            onChange={(e) => setFreezeReason(e.target.value)}
+            rows={3}
+            maxLength={500}
+            placeholder="Ex. : signalement pour arnaque"
+            className={`${inputClass} text-fg resize-none`}
+          />
+        </Field>
+        <div className="flex gap-2 mt-5">
+          <Btn variant="warning" onClick={() => setFrozen(true, freezeReason.trim())} disabled={freezeBusy}>
+            {freezeBusy ? "…" : "Geler"}
+          </Btn>
+          <CancelBtn onClick={() => setFreezeOpen(false)} disabled={freezeBusy} />
+        </div>
+      </Modal>
+
+      {/* ---- delete-message dialog ------------------------------------ */}
+      <Modal
+        open={!!deleteTarget}
+        onClose={() => !deleteBusy && setDeleteTarget(null)}
+        title="Supprimer le message"
+      >
+        {deleteTarget && (
+          <div className="rounded-xl border border-line bg-line/40 px-3 py-2 mb-4">
+            <p className="text-[11px] text-muted mb-0.5">{deleteTarget.sender.fullName}</p>
+            <p className="text-[13px] text-fg whitespace-pre-wrap break-words line-clamp-4">
+              {deleteTarget.text || <span className="italic text-muted">[{deleteTarget.kind?.toLowerCase()}]</span>}
+            </p>
+          </div>
+        )}
+        <Field label="Raison (facultatif)">
+          <textarea
+            value={deleteReason}
+            onChange={(e) => setDeleteReason(e.target.value)}
+            rows={3}
+            maxLength={500}
+            placeholder="Ex. : contenu injurieux"
+            className={`${inputClass} text-fg resize-none`}
+          />
+        </Field>
+        <div className="flex gap-2 mt-5">
+          <Btn variant="danger" onClick={deleteMessage} disabled={deleteBusy}>
+            {deleteBusy ? "…" : "Supprimer le message"}
+          </Btn>
+          <CancelBtn onClick={() => setDeleteTarget(null)} disabled={deleteBusy} />
+        </div>
+      </Modal>
     </>
   );
 }
@@ -426,4 +650,74 @@ function ModeBtn({ active, onClick, children }: { active: boolean; onClick: () =
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <p className="text-[12px] text-muted text-center px-4 py-10">{children}</p>;
+}
+
+/** Message content: text as-is, image thumbnail, compact voice player, or `[kind]`. */
+function MessageBody({ m }: { m: Message }) {
+  const caption = m.text ? (
+    <p className="text-[13px] text-fg whitespace-pre-wrap break-words">{m.text}</p>
+  ) : null;
+
+  if (m.kind === "IMAGE" && m.mediaUrl) {
+    return (
+      <div className="space-y-1">
+        <a href={m.mediaUrl} target="_blank" rel="noopener noreferrer" className="inline-block">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={m.mediaUrl}
+            alt="Image envoyée"
+            loading="lazy"
+            className="max-h-40 max-w-[220px] rounded-lg border border-line object-cover bg-line/40 hover:opacity-90 transition"
+          />
+        </a>
+        {caption}
+      </div>
+    );
+  }
+
+  if (m.kind === "VOICE" && m.mediaUrl) {
+    return (
+      <div className="space-y-1">
+        <audio controls preload="none" src={m.mediaUrl} className="h-9 w-full max-w-[260px]" />
+        {caption}
+      </div>
+    );
+  }
+
+  return caption ?? (
+    <p className="text-[13px] italic text-muted">[{m.kind?.toLowerCase()}]</p>
+  );
+}
+
+function CancelBtn({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="ml-auto px-4 py-2 text-sm rounded-xl border border-line text-fg hover:bg-line/40 font-medium transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+    >
+      Annuler
+    </button>
+  );
+}
+
+function LockIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <rect x="4" y="11" width="16" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </svg>
+  );
+}
+
+function TrashIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M3 6h18" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
 }

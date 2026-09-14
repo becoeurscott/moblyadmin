@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { adminApi, ApiError } from "@/lib/api";
@@ -24,9 +24,167 @@ interface UserFull {
   verified: boolean; identityVerified: boolean; verifiedAt?: string | null;
   city?: string | null; region?: string | null; neighborhood?: string | null;
   bio?: string | null; locale?: string; avatarUrl?: string | null; avatarColor?: string | null;
-  membershipTier?: string | null; moblyScore?: number | null; adminNote?: string | null;
+  membershipTier?: string | null; membershipExpires?: string | null;
+  moblyScore?: number | null; rating?: number | null; adminNote?: string | null;
   failedLoginCount: number; lockedUntil?: string | null;
   createdAt: string; lastSeenAt?: string | null;
+  /** Only present when the backend ships the owner-trial feature — feature-detect with `in`. */
+  ownerPaid?: boolean; ownerTrialStartedAt?: string | null;
+}
+
+/** String-typed mirror of the PATCH-able fields, as the edit form holds them. */
+interface EditForm {
+  fullName: string; email: string; phone: string;
+  bio: string; locale: "fr" | "en"; avatarUrl: string; avatarColor: string;
+  city: string; region: string; neighborhood: string;
+  membershipTier: string; membershipExpires: string; moblyScore: string;
+  isOwner: boolean; verified: boolean; identityVerified: boolean;
+  adminNote: string;
+}
+
+const TRIAL_DAYS = 7;
+const DAY_MS = 86_400_000;
+const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/;
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** ISO → `YYYY-MM-DD` in local time, for `<input type="date">`. */
+function toDateInput(iso?: string | null) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** ISO → `YYYY-MM-DDTHH:mm` in local time, for `<input type="datetime-local">`. */
+function toDateTimeInput(iso?: string | null) {
+  const day = toDateInput(iso);
+  if (!day) return "";
+  const d = new Date(iso!);
+  return `${day}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function toForm(u: UserFull): EditForm {
+  return {
+    fullName: u.fullName ?? "", email: u.email ?? "", phone: u.phone ?? "",
+    bio: u.bio ?? "", locale: u.locale === "en" ? "en" : "fr",
+    avatarUrl: u.avatarUrl ?? "", avatarColor: u.avatarColor ?? "",
+    city: u.city ?? "", region: u.region ?? "", neighborhood: u.neighborhood ?? "",
+    membershipTier: u.membershipTier ?? "", membershipExpires: toDateInput(u.membershipExpires),
+    moblyScore: u.moblyScore == null ? "" : String(u.moblyScore),
+    isOwner: !!u.isOwner, verified: !!u.verified, identityVerified: !!u.identityVerified,
+    adminNote: u.adminNote ?? "",
+  };
+}
+
+/**
+ * Diff the form against the loaded user and return only what changed, so a
+ * save never rewrites fields the operator did not touch (and the audit log
+ * stays readable). Empty strings become `null` for nullable fields.
+ */
+function buildPatch(u: UserFull, f: EditForm): { body: Record<string, unknown> } | { error: string } {
+  const init = toForm(u);
+  const body: Record<string, unknown> = {};
+
+  for (const [k, label] of [["fullName", "Le nom complet"], ["phone", "Le téléphone"]] as const) {
+    const v = f[k].trim();
+    if (v === init[k].trim()) continue;
+    if (!v) return { error: `${label} est obligatoire.` };
+    body[k] = v;
+  }
+
+  const nullable = [
+    "email", "city", "region", "neighborhood", "bio", "avatarUrl", "membershipTier", "adminNote",
+  ] as const;
+  for (const k of nullable) {
+    const v = f[k].trim();
+    if (v !== init[k].trim()) body[k] = v === "" ? null : v;
+  }
+
+  if (typeof body.email === "string" && !/^\S+@\S+\.\S+$/.test(body.email)) {
+    return { error: "Adresse e-mail invalide." };
+  }
+  if (typeof body.avatarUrl === "string" && !/^https?:\/\/\S+$/.test(body.avatarUrl)) {
+    return { error: "L'URL de l'avatar doit commencer par http:// ou https://." };
+  }
+  if (typeof body.bio === "string" && body.bio.length > 1000) {
+    return { error: "La bio ne peut pas dépasser 1000 caractères." };
+  }
+  if (typeof body.adminNote === "string" && body.adminNote.length > 2000) {
+    return { error: "La note interne ne peut pas dépasser 2000 caractères." };
+  }
+
+  const color = f.avatarColor.trim();
+  if (color !== init.avatarColor.trim()) {
+    if (color && !HEX_COLOR.test(color)) return { error: "La couleur doit être au format #RRGGBB." };
+    body.avatarColor = color || null;
+  }
+
+  if (f.locale !== init.locale) body.locale = f.locale;
+
+  if (f.membershipExpires !== init.membershipExpires) {
+    // A date-only expiry means "valid through that day", so end of day local time.
+    body.membershipExpires = f.membershipExpires
+      ? new Date(`${f.membershipExpires}T23:59:59`).toISOString()
+      : null;
+  }
+
+  const scoreRaw = f.moblyScore.trim().replace(",", ".");
+  const score = scoreRaw === "" ? null : Number(scoreRaw);
+  if (score !== null && (Number.isNaN(score) || score < 0 || score > 5)) {
+    return { error: "Le score Mobly doit être compris entre 0 et 5." };
+  }
+  if (score !== (u.moblyScore ?? null)) body.moblyScore = score;
+
+  for (const k of ["isOwner", "verified", "identityVerified"] as const) {
+    if (f[k] !== !!u[k]) body[k] = f[k];
+  }
+
+  return { body };
+}
+
+function trialStatus(u: UserFull, now: number) {
+  const start = u.ownerTrialStartedAt ? new Date(u.ownerTrialStartedAt).getTime() : null;
+  const end = start !== null ? start + TRIAL_DAYS * DAY_MS : null;
+  let label: string;
+  let variant: "success" | "warning" | "danger" | "neutral";
+  if (u.ownerPaid) {
+    label = "Payé"; variant = "success";
+  } else if (start === null || end === null) {
+    label = "Ancien propriétaire (sans essai)"; variant = "neutral";
+  } else if (now < end) {
+    const n = Math.ceil((end - now) / DAY_MS);
+    label = `Essai en cours · ${n} j restant${n > 1 ? "s" : ""}`; variant = "warning";
+  } else {
+    label = "Essai expiré — compte verrouillé"; variant = "danger";
+  }
+  return { label, variant, start, end };
+}
+
+/** A titled group inside the edit form. */
+function FormSection({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
+  return (
+    <section className="border-t border-line pt-4 first:border-t-0 first:pt-0">
+      <h3 className="text-sm font-semibold text-fg">{title}</h3>
+      {hint && <p className="text-xs text-muted mt-0.5">{hint}</p>}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">{children}</div>
+    </section>
+  );
+}
+
+/** Label + hint + switch on one row, for boolean fields. */
+function ToggleRow({
+  label, hint, checked, onChange, disabled,
+}: { label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-line px-3 py-2.5">
+      <div className="flex-1">
+        <p className="text-sm font-medium text-fg">{label}</p>
+        {hint && <p className="text-xs text-muted">{hint}</p>}
+      </div>
+      <Toggle checked={checked} onChange={onChange} disabled={disabled} label={label} />
+    </div>
+  );
 }
 
 interface Restriction {
@@ -90,7 +248,13 @@ export default function UserDetailPage() {
   const [reason, setReason] = useState("");
   const [minutes, setMinutes] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [edit, setEdit] = useState<Partial<UserFull> | null>(null);
+  const [form, setForm] = useState<EditForm | null>(null);
+  const [formError, setFormError] = useState("");
+  const [brokenAvatar, setBrokenAvatar] = useState("");
+  const [trialConfirm, setTrialConfirm] = useState<
+    { title: string; body: string; label: string; patch: () => Record<string, unknown>; ok: string } | null
+  >(null);
+  const [trialStartInput, setTrialStartInput] = useState("");
 
   const load = useCallback(() => {
     if (!token) return;
@@ -138,6 +302,55 @@ export default function UserDetailPage() {
     setRestrictTarget(null);
     setReason("");
   }
+
+  function openEdit() {
+    setForm(toForm(u));
+    setFormError("");
+    setBrokenAvatar("");
+  }
+
+  function setF<K extends keyof EditForm>(key: K, value: EditForm[K]) {
+    setForm((f) => (f ? { ...f, [key]: value } : f));
+  }
+
+  async function saveEdit() {
+    if (!form || !token) return;
+    const result = buildPatch(u, form);
+    if ("error" in result) {
+      setFormError(result.error);
+      return;
+    }
+    const changed = Object.keys(result.body);
+    if (changed.length === 0) {
+      setForm(null);
+      setError("");
+      setNotice("Aucune modification à enregistrer.");
+      return;
+    }
+    setBusy(true); setFormError(""); setError(""); setNotice("");
+    try {
+      await adminApi<{ user: UserFull }>(`/users/${id}`, token, { method: "PATCH", body: result.body });
+      setForm(null);
+      setNotice(`Profil mis à jour (${changed.length} champ${changed.length > 1 ? "s" : ""}).`);
+      load();
+    } catch (e) {
+      if (e instanceof ApiError && (e.code === "ROLE_REQUIRED" || e.status === 403)) {
+        setFormError("Votre rôle ne permet pas de modifier ce compte.");
+      } else {
+        setFormError(e instanceof ApiError ? e.message : String(e));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Owner-trial writes go through the same PATCH as the profile form. */
+  function patchOwner(patch: Record<string, unknown>, ok: string) {
+    run(() => adminApi(`/users/${id}`, token!, { method: "PATCH", body: patch }), ok);
+  }
+
+  const hasOwnerTrial = "ownerPaid" in u;
+  const trial = hasOwnerTrial ? trialStatus(u, Date.now()) : null;
 
   return (
     <div className="max-w-5xl">
@@ -207,7 +420,7 @@ export default function UserDetailPage() {
             Déverrouiller
           </Btn>
         )}
-        <Btn variant="neutral" onClick={() => setEdit({ ...u })}>Modifier</Btn>
+        <Btn variant="neutral" onClick={openEdit}>Modifier</Btn>
         <a
           href={`/api/proxy/admin/users/${id}/export`}
           className="px-4 py-2 text-sm rounded-xl font-medium bg-surface text-text hover:opacity-80 transition cursor-pointer"
@@ -238,11 +451,125 @@ export default function UserDetailPage() {
 
       <div className="mt-5">
         {tab === "profil" && (
+          <div className="space-y-4">
+          {hasOwnerTrial && trial && (
+            <section className="bg-card rounded-2xl border border-line p-5">
+              <div className="flex flex-wrap items-center gap-2 mb-1">
+                <h3 className="font-semibold text-fg">Propriétaire — essai &amp; inscription</h3>
+                <Badge variant={trial.variant}>{trial.label}</Badge>
+              </div>
+              <p className="text-xs text-muted mb-4">
+                Essai gratuit de {TRIAL_DAYS} jours, puis frais d&apos;inscription pour garder le compte
+                propriétaire actif.
+                {!u.isOwner && " Ce compte n'est pas marqué propriétaire : ces réglages n'ont d'effet que s'il le devient."}
+              </p>
+
+              <dl className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm mb-4">
+                <div>
+                  <dt className="text-xs text-muted mb-0.5">Début de l&apos;essai</dt>
+                  <dd className="text-fg font-medium">
+                    {trial.start !== null ? fmtDate(new Date(trial.start).toISOString()) : "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted mb-0.5">Fin de l&apos;essai</dt>
+                  <dd className="text-fg font-medium">
+                    {trial.end !== null ? fmtDate(new Date(trial.end).toISOString()) : "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted mb-0.5">Frais d&apos;inscription</dt>
+                  <dd className="text-fg font-medium">{u.ownerPaid ? "Payés" : "Non payés"}</dd>
+                </div>
+              </dl>
+
+              <div className="border-t border-line pt-4 space-y-4">
+                <ToggleRow
+                  label="Frais d'inscription payés"
+                  hint="Activé : le compte propriétaire reste actif quel que soit l'état de l'essai."
+                  checked={!!u.ownerPaid}
+                  disabled={busy}
+                  onChange={(next) => {
+                    if (next) {
+                      patchOwner({ ownerPaid: true }, "Frais d'inscription marqués comme payés.");
+                    } else {
+                      setTrialConfirm({
+                        title: "Retirer le paiement",
+                        body: "Le compte repasse sous le régime de l'essai. Si l'essai est terminé, le compte propriétaire sera verrouillé immédiatement.",
+                        label: "Retirer le paiement",
+                        patch: () => ({ ownerPaid: false }),
+                        ok: "Paiement retiré.",
+                      });
+                    }
+                  }}
+                />
+
+                <div className="flex flex-wrap gap-2">
+                  <Btn variant="primary" disabled={busy}
+                    onClick={() => setTrialConfirm({
+                      title: `Redémarrer l'essai (${TRIAL_DAYS} j)`,
+                      body: `Un nouvel essai de ${TRIAL_DAYS} jours démarre maintenant et le paiement est remis à « non payé ».`,
+                      label: "Redémarrer",
+                      patch: () => ({ ownerTrialStartedAt: new Date().toISOString(), ownerPaid: false }),
+                      ok: `Essai redémarré — ${TRIAL_DAYS} jours restants.`,
+                    })}>
+                    Redémarrer l&apos;essai ({TRIAL_DAYS} j)
+                  </Btn>
+                  <Btn variant="danger" disabled={busy}
+                    onClick={() => setTrialConfirm({
+                      title: "Faire expirer l'essai",
+                      body: "L'essai est daté d'il y a 8 jours et le paiement remis à « non payé » : le compte propriétaire sera verrouillé jusqu'au paiement.",
+                      label: "Faire expirer",
+                      patch: () => ({ ownerTrialStartedAt: new Date(Date.now() - 8 * DAY_MS).toISOString(), ownerPaid: false }),
+                      ok: "Essai expiré — compte propriétaire verrouillé.",
+                    })}>
+                    Faire expirer l&apos;essai
+                  </Btn>
+                  <Btn variant="neutral" disabled={busy}
+                    onClick={() => setTrialConfirm({
+                      title: "Sans essai (ancien propriétaire)",
+                      body: "La date d'essai est effacée : le compte est traité comme un propriétaire antérieur à l'essai.",
+                      label: "Effacer l'essai",
+                      patch: () => ({ ownerTrialStartedAt: null }),
+                      ok: "Essai effacé — ancien propriétaire.",
+                    })}>
+                    Sans essai (ancien)
+                  </Btn>
+                </div>
+
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="w-full sm:w-64">
+                    <Field label="Début d'essai personnalisé">
+                      <input
+                        type="datetime-local"
+                        value={trialStartInput || toDateTimeInput(u.ownerTrialStartedAt)}
+                        onChange={(e) => setTrialStartInput(e.target.value)}
+                        className={inputClass}
+                      />
+                    </Field>
+                  </div>
+                  <Btn variant="neutral" disabled={busy || !trialStartInput}
+                    onClick={() => {
+                      const d = new Date(trialStartInput);
+                      if (Number.isNaN(d.getTime())) {
+                        setError("Date de début d'essai invalide.");
+                        return;
+                      }
+                      patchOwner({ ownerTrialStartedAt: d.toISOString() }, "Date de début d'essai mise à jour.");
+                      setTrialStartInput("");
+                    }}>
+                    Appliquer la date
+                  </Btn>
+                </div>
+              </div>
+            </section>
+          )}
           <Card className="p-5">
             <dl className="grid grid-cols-2 gap-4 text-sm">
               {([
                 ["Ville", u.city], ["Région", u.region], ["Quartier", u.neighborhood],
                 ["Langue", u.locale], ["Abonnement", u.membershipTier],
+                ["Expiration abonnement", u.membershipExpires ? fmtDate(u.membershipExpires) : null],
                 ["Score Mobly", u.moblyScore?.toFixed(1)],
                 ["Inscrit le", fmtDate(u.createdAt)], ["Dernière activité", fmtDate(u.lastSeenAt)],
                 ["Vérifié le", fmtDate(u.verifiedAt)], ["Échecs de connexion", String(u.failedLoginCount)],
@@ -253,6 +580,12 @@ export default function UserDetailPage() {
                 </div>
               ))}
             </dl>
+            {u.bio && (
+              <div className="mt-4 pt-4 border-t border-line">
+                <p className="text-xs text-muted mb-1">Bio</p>
+                <p className="text-sm text-fg whitespace-pre-line">{u.bio}</p>
+              </div>
+            )}
             {u.adminNote && (
               <div className="mt-4 pt-4 border-t border-border">
                 <p className="text-xs text-text mb-1">Note interne</p>
@@ -268,6 +601,7 @@ export default function UserDetailPage() {
               ))}
             </div>
           </Card>
+          </div>
         )}
 
         {tab === "restrictions" && (
@@ -465,48 +799,176 @@ export default function UserDetailPage() {
         </div>
       </Modal>
 
-      {/* Edit profile */}
-      <Modal open={!!edit} onClose={() => setEdit(null)} title="Modifier le profil" wide>
-        {edit && (
-          <div className="grid grid-cols-2 gap-4">
-            {([
-              ["fullName", "Nom complet"], ["email", "E-mail"], ["phone", "Téléphone"],
-              ["city", "Ville"], ["region", "Région"], ["membershipTier", "Abonnement"],
-            ] as const).map(([key, label]) => (
-              <Field key={key} label={label}>
-                <input
-                  value={(edit[key] as string) ?? ""}
-                  onChange={(e) => setEdit({ ...edit, [key]: e.target.value })}
-                  className={inputClass}
-                />
+      {/* Edit profile — every field PATCH /admin/users/:id accepts */}
+      <Modal open={!!form} onClose={() => setForm(null)} title="Modifier le profil" wide>
+        {form && (
+          <div className="space-y-5">
+            <FormSection title="Profil">
+              <Field label="Nom complet">
+                <input value={form.fullName} maxLength={120}
+                  onChange={(e) => setF("fullName", e.target.value)} className={inputClass} />
               </Field>
-            ))}
-            <div className="col-span-2">
-              <Field label="Note interne" hint="Jamais visible par l'utilisateur.">
-                <textarea
-                  value={edit.adminNote ?? ""}
-                  onChange={(e) => setEdit({ ...edit, adminNote: e.target.value })}
-                  className={`${inputClass} resize-none h-20`}
-                />
+              <Field label="Langue">
+                <select value={form.locale}
+                  onChange={(e) => setF("locale", e.target.value === "en" ? "en" : "fr")} className={inputClass}>
+                  <option value="fr">Français</option>
+                  <option value="en">English</option>
+                </select>
               </Field>
-            </div>
-            <div className="col-span-2 flex gap-2">
-              <Btn
-                variant="primary"
-                disabled={busy}
-                onClick={() => {
-                  const body = {
-                    fullName: edit.fullName, email: edit.email || null, phone: edit.phone,
-                    city: edit.city || null, region: edit.region || null,
-                    membershipTier: edit.membershipTier || null, adminNote: edit.adminNote || null,
-                  };
-                  run(() => adminApi(`/users/${id}`, token!, { method: "PATCH", body }), "Profil mis à jour.");
-                  setEdit(null);
-                }}
-              >
-                Enregistrer
+              <Field label="E-mail" hint="Laisser vide pour retirer l'adresse.">
+                <input type="email" value={form.email} placeholder="nom@exemple.com"
+                  onChange={(e) => setF("email", e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Téléphone">
+                <input type="tel" value={form.phone} maxLength={20} placeholder="+237 6XX XX XX XX"
+                  onChange={(e) => setF("phone", e.target.value)} className={inputClass} />
+              </Field>
+              <div className="sm:col-span-2">
+                <Field label="Bio" hint={`${form.bio.length} / 1000`}>
+                  <textarea value={form.bio} maxLength={1000}
+                    onChange={(e) => setF("bio", e.target.value)} className={`${inputClass} resize-y h-24`} />
+                </Field>
+              </div>
+              <div className="sm:col-span-2">
+                <Field label="URL de l'avatar" hint="Laisser vide pour revenir aux initiales.">
+                  <div className="flex items-center gap-3">
+                    {form.avatarUrl.trim() && brokenAvatar !== form.avatarUrl.trim() ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={form.avatarUrl.trim()}
+                        alt="Aperçu de l'avatar"
+                        onError={() => setBrokenAvatar(form.avatarUrl.trim())}
+                        className="w-10 h-10 rounded-full object-cover border border-line shrink-0"
+                      />
+                    ) : (
+                      <span
+                        title={form.avatarUrl.trim() ? "Image introuvable" : "Aucune image"}
+                        className={`w-10 h-10 rounded-full border border-dashed shrink-0 flex items-center justify-center text-[10px] ${
+                          form.avatarUrl.trim() ? "border-danger text-danger" : "border-line text-muted"
+                        }`}
+                      >
+                        {form.avatarUrl.trim() ? "!" : "—"}
+                      </span>
+                    )}
+                    <input type="url" value={form.avatarUrl} placeholder="https://…"
+                      onChange={(e) => setF("avatarUrl", e.target.value)} className={inputClass} />
+                  </div>
+                </Field>
+              </div>
+              <div className="sm:col-span-2">
+                <Field label="Couleur de l'avatar" hint="Format #RRGGBB — utilisée derrière les initiales.">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`w-10 h-10 rounded-full shrink-0 flex items-center justify-center text-white text-xs font-bold ${
+                        HEX_COLOR.test(form.avatarColor.trim()) ? "" : "border border-dashed border-line"
+                      }`}
+                      style={HEX_COLOR.test(form.avatarColor.trim()) ? { background: form.avatarColor.trim() } : undefined}
+                    >
+                      {HEX_COLOR.test(form.avatarColor.trim()) ? (form.fullName || u.fullName).slice(0, 2).toUpperCase() : ""}
+                    </span>
+                    <input
+                      type="color"
+                      aria-label="Choisir la couleur"
+                      value={HEX_COLOR.test(form.avatarColor.trim()) ? form.avatarColor.trim().toLowerCase() : "#3a4ff0"}
+                      onChange={(e) => setF("avatarColor", e.target.value.toUpperCase())}
+                      className="h-10 w-12 shrink-0 rounded-lg border border-line bg-transparent p-0.5 cursor-pointer"
+                    />
+                    <input value={form.avatarColor} maxLength={7} placeholder="#3A4FF0"
+                      onChange={(e) => setF("avatarColor", e.target.value)}
+                      className={`${inputClass} font-mono ${
+                        form.avatarColor.trim() && !HEX_COLOR.test(form.avatarColor.trim()) ? "border-danger" : ""
+                      }`} />
+                    <Btn size="sm" variant="neutral" disabled={!form.avatarColor} onClick={() => setF("avatarColor", "")}>
+                      Effacer
+                    </Btn>
+                  </div>
+                </Field>
+              </div>
+            </FormSection>
+
+            <FormSection title="Localisation">
+              <Field label="Ville">
+                <input value={form.city} maxLength={80}
+                  onChange={(e) => setF("city", e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Région">
+                <input value={form.region} maxLength={80}
+                  onChange={(e) => setF("region", e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Quartier">
+                <input value={form.neighborhood} maxLength={80}
+                  onChange={(e) => setF("neighborhood", e.target.value)} className={inputClass} />
+              </Field>
+            </FormSection>
+
+            <FormSection title="Adhésion">
+              <Field label="Abonnement" hint="Ex. FREE, PREMIUM — vide pour aucun.">
+                <input value={form.membershipTier} maxLength={40} list="membership-tiers"
+                  onChange={(e) => setF("membershipTier", e.target.value)} className={inputClass} />
+                <datalist id="membership-tiers">
+                  <option value="FREE" />
+                  <option value="PREMIUM" />
+                </datalist>
+              </Field>
+              <Field label="Expiration de l'abonnement" hint="Valable jusqu'à la fin de ce jour.">
+                <div className="flex items-center gap-2">
+                  <input type="date" value={form.membershipExpires}
+                    onChange={(e) => setF("membershipExpires", e.target.value)} className={inputClass} />
+                  {form.membershipExpires && (
+                    <Btn size="sm" variant="neutral" onClick={() => setF("membershipExpires", "")}>Effacer</Btn>
+                  )}
+                </div>
+              </Field>
+              <Field label="Score Mobly" hint="Entre 0 et 5 — vide pour aucun score.">
+                <input type="number" inputMode="decimal" min={0} max={5} step={0.1} value={form.moblyScore}
+                  onChange={(e) => setF("moblyScore", e.target.value)} className={inputClass} />
+              </Field>
+            </FormSection>
+
+            <FormSection title="Statut">
+              <ToggleRow label="Propriétaire" hint="Peut publier des annonces."
+                checked={form.isOwner} onChange={(v) => setF("isOwner", v)} />
+              <ToggleRow label="Compte vérifié" hint="Téléphone / e-mail confirmé."
+                checked={form.verified} onChange={(v) => setF("verified", v)} />
+              <ToggleRow label="Identité vérifiée" hint="Badge visible dans l'app ; date de vérification mise à jour."
+                checked={form.identityVerified} onChange={(v) => setF("identityVerified", v)} />
+            </FormSection>
+
+            <section className="border-t border-line pt-4">
+              <h3 className="text-sm font-semibold text-fg mb-3">Note interne</h3>
+              <Field label="Note" hint={`Jamais visible par l'utilisateur · ${form.adminNote.length} / 2000`}>
+                <textarea value={form.adminNote} maxLength={2000}
+                  onChange={(e) => setF("adminNote", e.target.value)} className={`${inputClass} resize-y h-24`} />
+              </Field>
+            </section>
+
+            {formError && <Notice kind="danger">{formError}</Notice>}
+
+            <div className="flex gap-2 border-t border-line pt-4">
+              <Btn variant="primary" disabled={busy} onClick={saveEdit}>
+                {busy ? "Enregistrement…" : "Enregistrer"}
               </Btn>
-              <Btn variant="neutral" onClick={() => setEdit(null)}>Annuler</Btn>
+              <Btn variant="neutral" onClick={() => setForm(null)}>Annuler</Btn>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Owner-trial confirmation */}
+      <Modal open={!!trialConfirm} onClose={() => setTrialConfirm(null)} title={trialConfirm?.title ?? ""}>
+        {trialConfirm && (
+          <div className="space-y-4">
+            <p className="text-sm text-muted">{trialConfirm.body}</p>
+            <div className="flex gap-2">
+              <Btn variant="danger" disabled={busy}
+                onClick={() => {
+                  // Timestamps are computed at confirm time, not when the dialog opened.
+                  patchOwner(trialConfirm.patch(), trialConfirm.ok);
+                  setTrialConfirm(null);
+                }}>
+                {trialConfirm.label}
+              </Btn>
+              <Btn variant="neutral" onClick={() => setTrialConfirm(null)}>Annuler</Btn>
             </div>
           </div>
         )}
