@@ -28,6 +28,10 @@ export interface StatCardProps {
   icon?: ReactNode;
   tone?: Tone;
   aside?: ReactNode;
+  /** Full-width row under the value/aside — e.g. a donut legend. */
+  footer?: ReactNode;
+  /** Tighter padding + smaller type for secondary tiles. */
+  compact?: boolean;
   className?: string;
 }
 
@@ -43,6 +47,8 @@ export default function StatCard({
   icon,
   tone,
   aside,
+  footer,
+  compact = false,
   className = "",
 }: StatCardProps) {
   const t: Tone = tone ?? accent ?? "primary";
@@ -50,20 +56,19 @@ export default function StatCard({
   const deltaTone = dir === "down" ? "text-danger" : dir === "up" ? "text-success" : "text-muted";
 
   return (
-    <div
-      className={`bg-card rounded-2xl border border-line p-5 shadow-[var(--shadow-card)] flex gap-4 ${className}`}
-    >
+    <div className={`bg-card rounded-2xl border border-line ${compact ? "p-4" : "p-5"} shadow-[var(--shadow-card)] ${className}`}>
+      <div className="flex gap-4">
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-3">
-          <p className="text-[13px] font-medium text-muted">{label}</p>
+          <p className={`${compact ? "text-[12px]" : "text-[13px]"} font-medium text-muted`}>{label}</p>
           {icon && (
-            <span className={`w-8 h-8 rounded-lg grid place-items-center shrink-0 ${TONE[t]}`}>
+            <span className={`${compact ? "w-7 h-7" : "w-8 h-8"} rounded-lg grid place-items-center shrink-0 ${TONE[t]}`}>
               {icon}
             </span>
           )}
         </div>
 
-        <p className="text-[28px] leading-none font-bold text-fg tabular-nums mt-3">
+        <p className={`${compact ? "text-[22px] mt-2" : "text-[28px] mt-3"} leading-none font-bold text-fg tabular-nums`}>
           {fmt(value)}
         </p>
 
@@ -87,6 +92,8 @@ export default function StatCard({
       </div>
 
       {aside && <div className="flex items-center gap-3 shrink-0">{aside}</div>}
+      </div>
+      {footer && <div className="mt-4 pt-3 border-t border-line">{footer}</div>}
     </div>
   );
 }

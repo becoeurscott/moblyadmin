@@ -103,6 +103,7 @@ export default function ThreadsPage() {
 
   // by-user mode
   const [users, setUsers] = useState<Paged<UserRow> | null>(null);
+  const [usersError, setUsersError] = useState<string | null>(null);
   const [userPage, setUserPage] = useState(0);
   const [selectedUser, setSelectedUser] = useState<UserRow | null>(null);
 
@@ -118,11 +119,20 @@ export default function ThreadsPage() {
 
   const loadUsers = useCallback(() => {
     if (!token || mode !== "byUser") return;
+    setUsersError(null);
     adminApi<Paged<UserRow>>("/threads/by-user", token, {
       params: { page: userPage, query, pageSize: 30 },
     })
       .then(setUsers)
-      .catch(console.error);
+      .catch((e: { status?: number; message?: string }) => {
+        // A 404 here means the backend behind this admin predates the
+        // endpoint — say so instead of spinning forever.
+        setUsersError(
+          e?.status === 404
+            ? "Le serveur connecté n'a pas encore la route /threads/by-user (déployez le backend)."
+            : e?.message || "Impossible de charger les utilisateurs.",
+        );
+      });
   }, [token, mode, userPage, query]);
 
   const loadThreads = useCallback(() => {
@@ -213,7 +223,9 @@ export default function ThreadsPage() {
         {/* ---- users column ------------------------------------------- */}
         {mode === "byUser" && (
           <Column title="Utilisateurs" meta={users ? `${users.total}` : undefined}>
-            {!users ? (
+            {usersError ? (
+              <p className="text-[12px] text-danger px-4 py-6">{usersError}</p>
+            ) : !users ? (
               <Empty>Chargement…</Empty>
             ) : users.items.length === 0 ? (
               <Empty>Aucun utilisateur avec une conversation.</Empty>

@@ -105,17 +105,7 @@ export function BarChart({
             )}
           </div>
 
-          {/* x labels */}
-          <div className="flex mt-2">
-            {data.map((d) => (
-              <span
-                key={d.label}
-                className="flex-1 text-center text-[10px] uppercase tracking-wide text-muted truncate"
-              >
-                {d.label}
-              </span>
-            ))}
-          </div>
+          <AxisLabels data={data} centered />
         </div>
       </div>
     </div>
@@ -167,9 +157,6 @@ export function LineChart({
 
   const ticks = 4;
   const gridVals = Array.from({ length: ticks + 1 }, (_, i) => Math.round((max / ticks) * i));
-
-  // Show a handful of x labels so they never overlap.
-  const every = Math.max(1, Math.ceil(data.length / 7));
 
   return (
     <div className="flex gap-3">
@@ -249,19 +236,7 @@ export function LineChart({
           )}
         </div>
 
-        <div className="flex justify-between mt-2">
-          {data.map((d, i) => (
-            <span
-              key={d.label}
-              className={`text-[10px] uppercase tracking-wide text-muted ${
-                i % every === 0 || i === data.length - 1 ? "" : "invisible"
-              }`}
-              style={{ width: 0, whiteSpace: "nowrap" }}
-            >
-              {d.label}
-            </span>
-          ))}
-        </div>
+        <AxisLabels data={data} centered={false} />
       </div>
     </div>
   );
@@ -329,10 +304,41 @@ export function Donut({
   );
 }
 
-export function DonutLegend({ segments }: { segments: Segment[] }) {
+/**
+ * A handful of evenly spaced x-axis labels, absolutely positioned so they can
+ * never collide however many points there are. `centered` puts each label
+ * under the middle of its bar; otherwise under the point itself.
+ */
+function AxisLabels({ data, centered }: { data: Point[]; centered: boolean }) {
+  const n = data.length;
+  if (!n) return null;
+  const step = Math.max(1, Math.ceil(n / 6));
+  const idx: number[] = [];
+  for (let i = 0; i < n; i += step) idx.push(i);
+  if (idx[idx.length - 1] !== n - 1) idx.push(n - 1);
+  return (
+    <div className="relative h-4 mt-2 overflow-hidden">
+      {idx.map((i) => {
+        const x = centered ? ((i + 0.5) / n) * 100 : n > 1 ? (i / (n - 1)) * 100 : 50;
+        const shift = x < 4 ? "" : x > 96 ? "-translate-x-full" : "-translate-x-1/2";
+        return (
+          <span
+            key={i}
+            className={`absolute top-0 ${shift} text-[10px] uppercase tracking-wide text-muted whitespace-nowrap`}
+            style={{ left: `${x}%` }}
+          >
+            {data[i].label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+export function DonutLegend({ segments, inline = false }: { segments: Segment[]; inline?: boolean }) {
   const total = Math.max(segments.reduce((s, x) => s + x.value, 0), 1);
   return (
-    <ul className="space-y-1.5">
+    <ul className={inline ? "flex flex-wrap gap-x-4 gap-y-1.5" : "space-y-1.5"}>
       {segments.map((s) => (
         <li key={s.label} className="flex items-center gap-2 text-[11px] text-muted">
           <span className="w-2 h-2 rounded-full shrink-0" style={{ background: s.color }} />
