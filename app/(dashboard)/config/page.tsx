@@ -53,6 +53,13 @@ const FLAG_GROUPS: { title: string; flags: [string, string][] }[] = [
     ],
   },
   {
+    title: "Support",
+    flags: [
+      ["support.chat", "Chat avec le support"],
+      ["support.ai", "Assistant IA du support (répond et agit automatiquement)"],
+    ],
+  },
+  {
     title: "Visites et avis",
     flags: [
       ["visits.request", "Demander une visite"],
@@ -384,6 +391,45 @@ export default function ConfigPage() {
                 />
               </Field>
             ))}
+
+            <div className="pt-4 border-t border-line space-y-4">
+              <h3 className="font-semibold text-dark">Support</h3>
+              <Notice kind="success">
+                Le message d&apos;accueil est envoyé automatiquement à
+                l&apos;ouverture d&apos;une conversation, avant que la personne
+                n&apos;écrive. <code>{"{prenom}"}</code> est remplacé par son
+                prénom. Laisser vide désactive l&apos;accueil.
+              </Notice>
+              {([
+                [
+                  "supportGreetingAi",
+                  "Accueil — quand l'assistant IA est activé",
+                  2,
+                ],
+                [
+                  "supportGreetingHuman",
+                  "Accueil — quand seule l'équipe répond",
+                  2,
+                ],
+                [
+                  "supportAiContext",
+                  "Contexte métier donné à l'assistant (ton, promotions, règles maison)",
+                  5,
+                ],
+              ] as const).map(([key, label, rows]) => (
+                <Field key={key} label={label}>
+                  <textarea
+                    rows={rows}
+                    value={
+                      ((patch.copy as Record<string, string>)?.[key] ??
+                        (cfg.copy[key] as string)) ?? ""
+                    }
+                    onChange={(e) => stage("copy", (cur) => ({ ...cur, [key]: e.target.value }))}
+                    className={inputClass}
+                  />
+                </Field>
+              ))}
+            </div>
           </Card>
         )}
 
