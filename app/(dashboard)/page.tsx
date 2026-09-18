@@ -6,6 +6,7 @@ import { useAuth } from "@/lib/auth";
 import { adminApi } from "@/lib/api";
 import Topbar from "@/components/Topbar";
 import StatCard from "@/components/StatCard";
+import OwnerTrialsPanel from "@/components/OwnerTrialsPanel";
 import { BarChart, LineChart, Donut, DonutLegend, type Point } from "@/components/charts";
 
 /* ------------------------------------------------------------------ */
@@ -267,6 +268,9 @@ export default function OverviewPage() {
         <BadgeCard icon={<FlagIcon />} label="Signalements ouverts" value={o ? n(o.openReports) : "…"}
           badge={o ? `${n(o.threads)} conv.` : undefined} badgeTone={o && o.openReports > 0 ? "danger" : "success"} href="/reports" />
       </section>
+
+      {/* ---- owner trials with a live countdown -------------------------- */}
+      {token && <OwnerTrialsPanel token={token} />}
 
       {/* ---- recent listings (scrollable) -------------------------------- */}
       <Panel

@@ -9,6 +9,7 @@ import {
   Badge, Btn, Card, ConfirmDialog, Field, JsonDiff, Modal, Notice,
   Spinner, Tabs, Toggle, fmtDate, inputClass,
 } from "@/components/ui";
+import TrialCountdown from "@/components/TrialCountdown";
 
 /**
  * Everything an operator can do to one account.
@@ -153,8 +154,8 @@ function trialStatus(u: UserFull, now: number) {
   } else if (start === null || end === null) {
     label = "Ancien propriétaire (sans essai)"; variant = "neutral";
   } else if (now < end) {
-    const n = Math.ceil((end - now) / DAY_MS);
-    label = `Essai en cours · ${n} j restant${n > 1 ? "s" : ""}`; variant = "warning";
+    // The exact time left is shown by the live countdown below.
+    label = "Essai en cours"; variant = "warning";
   } else {
     label = "Essai expiré — compte verrouillé"; variant = "danger";
   }
@@ -471,6 +472,12 @@ export default function UserDetailPage() {
                     {trial.start !== null ? fmtDate(new Date(trial.start).toISOString()) : "—"}
                   </dd>
                 </div>
+                {trial.start !== null && trial.end !== null && !u.ownerPaid && (
+                  <div className="sm:col-span-3">
+                    <dt className="text-xs text-muted mb-1">Temps restant</dt>
+                    <dd><TrialCountdown start={trial.start} end={trial.end} /></dd>
+                  </div>
+                )}
                 <div>
                   <dt className="text-xs text-muted mb-0.5">Fin de l&apos;essai</dt>
                   <dd className="text-fg font-medium">
