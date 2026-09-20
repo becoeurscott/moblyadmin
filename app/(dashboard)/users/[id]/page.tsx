@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { adminApi, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import {
@@ -237,6 +237,7 @@ const DURATIONS = [
 export default function UserDetailPage() {
   const { token } = useAuth();
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const id = params.id;
 
   const [data, setData] = useState<Detail | null>(null);
@@ -249,6 +250,7 @@ export default function UserDetailPage() {
   const [reason, setReason] = useState("");
   const [minutes, setMinutes] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmPurge, setConfirmPurge] = useState(false);
   const [form, setForm] = useState<EditForm | null>(null);
   const [formError, setFormError] = useState("");
   const [brokenAvatar, setBrokenAvatar] = useState("");
@@ -273,6 +275,24 @@ export default function UserDetailPage() {
       load();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Like `run`, but never reloads afterwards: the user is gone, so `load()`
+   *  would only 404. Navigates away instead, and stays on the page on error
+   *  so the message is readable. */
+  async function purge() {
+    if (!token) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await adminApi(`/users/${id}`, token, { method: "DELETE", confirm: id });
+      setConfirmPurge(false);
+      router.push("/users");
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+      setConfirmPurge(false);
     } finally {
       setBusy(false);
     }
@@ -429,6 +449,7 @@ export default function UserDetailPage() {
           Exporter
         </a>
         <Btn variant="danger" onClick={() => setConfirmDelete(true)}>Anonymiser</Btn>
+        <Btn variant="danger" onClick={() => setConfirmPurge(true)}>Supprimer</Btn>
       </div>
 
       {(notice || error) && (
@@ -980,6 +1001,33 @@ export default function UserDetailPage() {
           </div>
         )}
       </Modal>
+
+      {/* Permanent removal. Distinct from "Anonymiser": the row and everything
+          cascading from it (annonces, fils, avis) are destroyed, so there is
+          nothing left to come back to — hence the separate dialog and the
+          redirect, since this page's own user ceases to exist. */}
+      <ConfirmDialog
+        open={confirmPurge}
+        onClose={() => setConfirmPurge(false)}
+        onConfirm={purge}
+        title="Supprimer définitivement ce compte"
+        phrase={id}
+        busy={busy}
+        confirmLabel="Supprimer"
+        body={
+          <>
+            <p>
+              Le compte et toutes ses données sont effacés : annonces, fils de discussion,
+              avis, visites et favoris. Les conversations des autres utilisateurs avec ce
+              compte disparaissent également.
+            </p>
+            <p className="text-danger font-medium">
+              Cette action est irréversible. Préférez « Anonymiser » pour une demande
+              d&apos;effacement : les fils des autres utilisateurs restent intacts.
+            </p>
+          </>
+        }
+      />
 
       <ConfirmDialog
         open={confirmDelete}
