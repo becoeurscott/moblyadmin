@@ -1,0 +1,8 @@
+node_modules
+.next
+.git
+.env*
+*.bak-*
+.insforge
+tsconfig.tsbuildinfo
+ADMIN_DASHBOARD_PROMPT.md
